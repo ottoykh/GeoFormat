@@ -129,24 +129,21 @@ hk_district_areas = {
 
 # Create a reverse mapping from area to district
 area_to_district = {area.lower(): district for district, areas in hk_district_areas.items() for area in areas}
+
+# Define Pydantic model for input and output
 class AddressOutput(BaseModel):
-    street: str = None
-    area: str = None
-    district: str = None
-    region: str = None
+    street: Optional[str]
+    area: Optional[str]
+    district: Optional[str]
+    region: Optional[str]
 
+# Initialize FastAPI app
+app = FastAPI()
 
-# Define a NamedTuple to store the address output
-class AddressOutput(NamedTuple):
-    area: str = ''
-    district: str = ''
-    region: str = ''
-    street: str = ''
-
-
+# Function to process input and return output
 def segment_Einput(input_str: str) -> AddressOutput:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string if necessary
-
+    
     parts = [part.strip() for part in decoded_input.split(',')]
 
     result = AddressOutput()
@@ -180,9 +177,9 @@ def segment_Einput(input_str: str) -> AddressOutput:
 
     # Determine region based on district
     if result.district:
-        if result.district in ['Central and Western', 'Eastern', 'Southern', 'Wan Chai']:
+        if result.district in hk_district_areas['Hong Kong Island']:
             result.region = 'Hong Kong Island'
-        elif result.district in ['Kowloon City', 'Kwun Tong', 'Sham Shui Po', 'Wong Tai Sin', 'Yau Tsim Mong']:
+        elif result.district in hk_district_areas['Kowloon']:
             result.region = 'Kowloon'
         else:
             result.region = 'New Territories'
@@ -193,9 +190,13 @@ def segment_Einput(input_str: str) -> AddressOutput:
 
     return result
 
+# FastAPI endpoint to handle GET requests with encoded input
 @app.get("/area/en/{input_str}")
 def segment_address(input_str: str):
-    return segment_Einput(input_str)
+    decoded_input = unquote(input_str)  # Decode URL-encoded input string
+    output = segment_Einput(decoded_input)
+    return output
+
 
 def is_chinese(string):
     # This function checks if the string contains Chinese characters

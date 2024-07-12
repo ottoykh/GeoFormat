@@ -51,7 +51,7 @@ hk_district_areas = {
     'Kwai Tsing': ['Kwai Chung', 'Tsing Yi', 'Kwai Fong', 'Kwai Hing', 'Tsing Yi North', 'Tsing Yi South', 'Cheung Ching Estate', 'Greenfield Garden'],
     'North': ['Fanling', 'Sheung Shui', 'Sha Tau Kok', 'Kwu Tung', 'Luen Wo Hui', 'Kwan Tei', 'Lo Wu', 'Ping Che', 'Kam Tsin'],
     'Sai Kung': ['Sai Kung', 'Tseung Kwan O', 'Clear Water Bay', 'Hang Hau', 'Pak Sha Wan', 'Hoi Ha', 'Sai Wan', 'Tap Mun', 'Sheung Sze Wan', 'Chek Keng', 'Tai Mong Tsai', 'Kau Sai Chau'],
-    'Sha Tin': ['Sha Tin', 'Ma On Shan', 'Fo Tan', 'Tai Wai', 'Wu Kai Sha', 'Yuen Chau Kok', 'Shing Mun River'],
+    'Sha Tin': ['Sha Tin', 'Ma On Shan', 'Fo Tan', 'Tai Wai', 'Wu Kai Sha', 'Yuen Chau Kok', 'Shing Mun River', 'Shui Chuen O'],
     'Tai Po': ['Tai Po', 'Tai Po Market', 'Tai Po Kau', 'Tai Po Hui', 'Tai Po Industrial Estate', 'Sam Mun Tsai', 'Lam Tsuen', 'Yuen Chau Tsai', 'Chung Tsai Yuen', 'Ma Wo', 'Shuen Wan', 'Yuen Leng', 'Fung Yuen'],
     'Tsuen Wan': ['Tsuen Wan', 'Sham Tseng', 'Ting Kau', 'Tai Wo Hau', 'Cheung Shan', 'Belvedere Garden', 'Discovery Park', 'Nina Tower'],
     'Tuen Mun': ['Tuen Mun', 'Tai Hing', 'Yuet Wu', 'Butterfly', 'San Hui', 'Tsing Shan', 'Tuen Mun Town Centre', 'On Ting', 'Siu Hong', 'Tsing Chung Koon', 'Tuen Mun New Town', 'Tuen Mun Industrial Area'],
@@ -71,13 +71,19 @@ def segment_input(input_str: str) -> AddressOutput:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string
     address_output = AddressOutput(street=None, area=None, district=None, region=None)
 
+    # Splitting based on comma
+    segments = decoded_input.split(',')
+
+    # Extracting region
     for region, districts in areas.items():
         for district, sub_districts in districts.items():
             for sub_district in sub_districts:
                 if sub_district in decoded_input:
-                    street_name = decoded_input.replace(sub_district, '').strip()
-                    address_output = AddressOutput(street=street_name, area=sub_district, district=district, region=region)
-                    return address_output
+                    for segment in segments:
+                        if sub_district in segment:
+                            street_name = segment.replace(sub_district, '').strip()
+                            address_output = AddressOutput(street=street_name, area=sub_district, district=district, region=region)
+                            return address_output
 
     # If no match found, return Unknown region with the input as street
     address_output.street = decoded_input.strip()
@@ -99,11 +105,12 @@ def segment_address(input_str: str):
 
 @app.get("/area/en/{input_str}")
 def translate_address(input_str: str):
-    result = segment_input(input_str.lower())  # Convert input to lowercase for case-insensitive matching
+    result = segment_input(input_str)
+
     if result.area and result.district:
-        for eng_district, sub_districts in areas[result.region].items():
+        for eng_district, sub_districts in hk_district_areas.items():
             if result.area.lower() in [sub_dist.lower() for sub_dist in sub_districts]:  # Check case-insensitive match
-                # Format street to exclude district and region names
                 street_name = result.street.replace(result.district, '').replace(result.region, '').strip()
                 return AddressOutput(street=street_name, area=result.area, district=eng_district, region=result.region)
+
     return result

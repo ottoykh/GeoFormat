@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from typing import List, Dict, Union, Optional
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 import re
 from pydantic import BaseModel
 
@@ -92,9 +92,6 @@ def segment_input(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
 
     return results
 
-@app.get("/area/zh-hk/{input_str}")
-def segment_address(input_str: str):
-    return segment_input(input_str)
 hk_districts = [
     'Central and Western', 'Eastern', 'Southern', 'Wan Chai',
     'Kowloon City', 'Kwun Tong', 'Sham Shui Po', 'Wong Tai Sin', 'Yau Tsim Mong',
@@ -124,12 +121,12 @@ hk_district_areas = {
 
 # Create a reverse mapping from area to district
 area_to_district = {area.lower(): district for district, areas in hk_district_areas.items() for area in areas}
-class AddressOutput(BaseModel):
-    street: str = None
-    area: str = None
-    district: str = None
-    region: str = None
 
+class AddressOutput(BaseModel):
+    street: Optional[str] = None
+    area: Optional[str] = None
+    district: Optional[str] = None
+    region: Optional[str] = None
 
 def segment_Einput(input_str: str) -> AddressOutput:
     parts = [part.strip() for part in input_str.split(',')]
@@ -177,19 +174,28 @@ def segment_Einput(input_str: str) -> AddressOutput:
 
     return result
 
-@app.get("/area/en/{input_str}")
-def segment_address(input_str: str):
-    return segment_Einput(input_str)
+def safe_unquote(input_str: str) -> str:
+    try:
+        return unquote(input_str)
+    except:
+        return input_str
 
-def is_chinese(string):
-    # This function checks if the string contains Chinese characters
-    return any('\u4e00' <= char <= '\u9fff' for char in string)
+@app.get("/area/zh-hk")
+def segment_address_zh(input_str: str = Query(..., description="Chinese address to segment")):
+    decoded_input = safe_unquote(input_str)
+    return segment_input(decoded_input)
 
-@app.get("/area/{input_str}")
-async def segment_address(input_str: str):
-    if is_chinese(input_str):
+@app.get("/area/en")
+def segment_address_en(input_str: str = Query(..., description="English address to segment")):
+    decoded_input = safe_unquote(input_str)
+    return segment_Einput(decoded_input)
+
+@app.get("/area")
+async def segment_address(input_str: str = Query(..., description="Address to segment")):
+    decoded_input = safe_unquote(input_str)
+    if is_chinese(decoded_input):
         # Redirect to Chinese endpoint
-        return RedirectResponse(url=f"/area/zh-hk/{input_str}")
+        return RedirectResponse(url=f"/area/zh-hk?input_str={quote(input_str)}")
     else:
-        # Assumed to English endpoint
-        return RedirectResponse(url=f"/area/en/{input_str}")
+        # Assumed to be English endpoint
+        return RedirectResponse(url=f"/area/en?input_str={quote(input_str)}")

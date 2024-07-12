@@ -135,10 +135,10 @@ class AddressInput(BaseModel):
     input_str: str
 
 class AddressOutput(BaseModel):
-    street: Optional[str]
-    area: Optional[str]
-    district: Optional[str]
-    region: Optional[str]
+    street: Optional[str] = None
+    area: Optional[str] = None
+    district: Optional[str] = None
+    region: Optional[str] = None
 
 def segment_Einput(input_str: str) -> AddressOutput:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string if necessary
@@ -184,8 +184,8 @@ def segment_Einput(input_str: str) -> AddressOutput:
             result.region = 'New Territories'
 
     # If we still don't have all the information, set the entire input as the street
-    if not all([result.street, result.area, result.district, result.region]):
-        result = AddressOutput(street=decoded_input)
+    if not any([result.street, result.area, result.district, result.region]):
+        result.street = decoded_input
 
     return result
 

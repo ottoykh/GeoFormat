@@ -1,8 +1,6 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
 from typing import List, Dict, Union, Optional
 from urllib.parse import unquote
-import re
 from pydantic import BaseModel
 
 app = FastAPI()
@@ -39,56 +37,49 @@ areas = {
 }
 
 class AddressOutput(BaseModel):
-    street: Optional[str] = None
-    area: Optional[str] = None
-    district: Optional[str] = None
-    region: Optional[str] = None
+    street: str = None
+    area: str = None
+    district: str = None
+    region: str = None
 
-def segment_input(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
+def segment_input(input_str: str) -> AddressOutput:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string
-    results = []
+    address_output = AddressOutput(street=None, area=None, district=None, region=None)
+
     for area, districts in areas.items():
         for district, sub_districts in districts.items():
             for sub_district in sub_districts:
                 if sub_district in decoded_input:
-                    building_street = decoded_input.replace(sub_district, '').strip()
-                    for prefix in [area, district, sub_district]:
-                        if building_street.startswith(prefix):
-                            building_street = building_street[len(prefix):].strip()
-                    if '號' in building_street:
-                        street, building_details = building_street.split('號', 1)
-                        street += '號'
-                    else:
-                        street = building_street.strip() + '號'
-                        building_details = ''
-                    results.append({
-                        'area': area,
-                        'district': district,
-                        'sub_district': sub_district,
-                        'street': [street],
-                        'building': building_details.strip()
-                    })
-                    return results
+                    address_output.area = sub_district
+                    address_output.district = district
+                    address_output.region = area
+                    address_output.street = decoded_input.replace(sub_district, '').strip()
+                    return address_output
+
+    hk_districts = {
+        'Yuen Long': ['Tin Shui Wai']
+        # Add more mappings as necessary
+    }
+
+    for district, sub_districts in hk_districts.items():
+        for sub_district in sub_districts:
+            if sub_district in decoded_input:
+                address_output.area = sub_district
+                address_output.district = district
+                address_output.region = "New Territories"
+                address_output.street = decoded_input.replace(sub_district, '').strip()
+                return address_output
+
     if decoded_input.strip():
-        building_street = decoded_input.strip()
-        if '號' in building_street:
-            street, building_details = building_street.split('號', 1)
-            street += '號'
-        else:
-            street = building_street.strip() + '號'
-            building_details = ''
-        results.append({
-            'area': '',
-            'district': '',
-            'sub_district': '',
-            'street': [street],
-            'building': building_details.strip()
-        })
-    return results
+        address_output.street = decoded_input.strip()
+        address_output.region = "Unknown"
+
+    return address_output
 
 @app.get("/area/zh-hk/{input_str}")
-def segment_address_zh_hk(input_str: str):
-    return segment_input(input_str)
+def segment_address(input_str: str):
+    decoded_input = unquote(input_str)
+    return segment_input(decoded_input)
 
 hk_districts = [
     'Central and Western', 'Eastern', 'Southern', 'Wan Chai',
@@ -107,64 +98,39 @@ hk_district_areas = {
     'Sham Shui Po': ['Sham Shui Po', 'Cheung Sha Wan', 'Lai Chi Kok', 'Shek Kip Mei', 'Mei Foo', 'Nam Cheong', 'Yau Yat Tsuen', 'So Uk Estate', 'Wah Lai Estate', 'Un Chau Estate'],
     'Wong Tai Sin': ['Wong Tai Sin', 'Diamond Hill', 'Choi Hung', 'Lok Fu', 'Tsz Wan Shan', 'San Po Kong', 'Ngau Chi Wan', 'Wang Tau Hom', 'Chuk Yuen', 'Tung Tau Estate'],
     'Yau Tsim Mong': ['Yau Ma Tei', 'Tsim Sha Tsui', 'Jordan', 'Mong Kok', 'Tai Kok Tsui', 'King’s Park', 'West Kowloon', 'Kowloon Park', 'Cherry Street', 'Langham Place'],
-    'Kwai Tsing': ['Kwai Chung', 'Tsing Yi', 'Kwai Fong', 'Kwai Hing', 'Tsing Yi North', 'Tsing Yi South', 'Cheung Hong', 'Cheung Hang', 'Lai King', 'Greenfield Garden', 'Mayfair Gardens', 'Cheung Wang'],
-    'North': ['Sheung Shui', 'Fanling', 'Sha Tau Kok', 'Kwu Tung', 'Ta Kwu Ling', 'Lung Yeuk Tau', 'Luk Keng', 'Ping Che', 'Fanling North', 'Shek Wu Hui', 'Wah Ming Estate', 'Ching Ho Estate'],
-    'Sai Kung': ['Sai Kung', 'Clear Water Bay', 'Tseung Kwan O', 'Hang Hau', 'Pak Tam Chung', 'Silverstrand', 'Po Lam', 'Fei Ngo Shan', 'Sai Kung Town', 'Kau Sai Chau', 'Pak Sha Wan', 'Marina Cove'],
-    'Sha Tin': ['Sha Tin', 'Ma On Shan', 'Fo Tan', 'Tai Wai', 'Hin Keng', 'Wu Kai Sha', 'Shatin City One', 'Jubilee Garden', 'Lek Yuen Estate', 'Wo Che Estate', 'City One', 'Sha Tin Wai', 'Tate’s Cairn', 'Sha Tin Heights'],
-    'Tai Po': ['Tai Po', 'Tai Mei Tuk', 'Tai Po Kau', 'Lam Tsuen', 'Plover Cove', 'Hong Lok Yuen', 'Tai Wo Estate', 'Fu Heng Estate', 'Wan Tau Tong', 'Tai Po Industrial Estate', 'Uptown Plaza', 'Greenfield Garden', 'Eightland Gardens'],
-    'Tsuen Wan': ['Tsuen Wan', 'Tsing Lung Tau', 'Discovery Park', 'Belvedere Garden', 'Sham Tseng', 'Ma Wan', 'Allway Gardens', 'Tsuen Wan West', 'Tsuen King Circuit', 'Nina Tower', 'Clague Garden Estate'],
-    'Tuen Mun': ['Tuen Mun', 'Castle Peak', 'Sam Shing', 'So Kwun Wat', 'Siu Hong', 'Gold Coast', 'Tuen Mun Town Centre', 'San Hui', 'Butterfly Estate', 'Tai Lam', 'Lung Mun Oasis', 'On Ting Estate'],
-    'Yuen Long': ['Yuen Long', 'Tin Shui Wai', 'Kam Tin', 'Shui Pin Wai', 'Shap Pat Heung', 'Ping Shan', 'Hung Shui Kiu', 'Fairview Park', 'Yuen Long Town', 'Nam Sang Wai', 'Pat Heung', 'Ha Tsuen'],
-    'Islands': ['Lantau Island', 'Cheung Chau', 'Peng Chau', 'Lamma Island', 'Discovery Bay', 'Tung Chung', 'Mui Wo', 'Tai O', 'Ngong Ping', 'Po Lin Monastery', 'Silvermine Bay', 'Pui O', 'Chek Lap Kok', 'Sok Kwu Wan', 'Yung Shue Wan', 'Hei Ling Chau']
+    'Kwai Tsing': ['Kwai Chung', 'Tsing Yi', 'Kwai Fong', 'Kwai Hing', 'Tsing Yi North', 'Tsing Yi South', 'Cheung Ching Estate', 'Greenfield Garden'],
+    'North': ['Fanling', 'Sheung Shui', 'Sha Tau Kok', 'Kwu Tung', 'Luen Wo Hui', 'Kwan Tei', 'Lo Wu', 'Ping Che', 'Kam Tsin'],
+    'Sai Kung': ['Sai Kung', 'Tseung Kwan O', 'Clear Water Bay', 'Hang Hau', 'Pak Sha Wan', 'Hoi Ha', 'Sai Wan', 'Tap Mun', 'Sheung Sze Wan', 'Chek Keng', 'Tai Mong Tsai', 'Kau Sai Chau'],
+    'Sha Tin': ['Sha Tin', 'Ma On Shan', 'Fo Tan', 'Tai Wai', 'Wu Kai Sha', 'Yuen Chau Kok', 'Shing Mun River'],
+    'Tai Po': ['Tai Po', 'Tai Po Market', 'Tai Po Kau', 'Tai Po Hui', 'Tai Po Industrial Estate', 'Sam Mun Tsai', 'Lam Tsuen', 'Yuen Chau Tsai', 'Chung Tsai Yuen', 'Ma Wo', 'Shuen Wan', 'Yuen Leng', 'Fung Yuen'],
+    'Tsuen Wan': ['Tsuen Wan', 'Sham Tseng', 'Ting Kau', 'Tai Wo Hau', 'Cheung Shan', 'Belvedere Garden', 'Discovery Park', 'Nina Tower'],
+    'Tuen Mun': ['Tuen Mun', 'Tai Hing', 'Yuet Wu', 'Butterfly', 'San Hui', 'Tsing Shan', 'Tuen Mun Town Centre', 'On Ting', 'Siu Hong', 'Tsing Chung Koon', 'Tuen Mun New Town', 'Tuen Mun Industrial Area'],
+    'Yuen Long': ['Yuen Long', 'Tin Shui Wai', 'Kam Tin', 'Pat Heung', 'Shui Pin Wai', 'Tong Yan San Tsuen', 'Ha Tsuen', 'Hung Shui Kiu', 'Ping Shan', 'Shap Pat Heung', 'Yuen Long Town'],
+    'Islands': ['Cheung Chau', 'Peng Chau', 'Mui Wo', 'Discovery Bay', 'Tung Chung', 'Lantau Island', 'South Lantau', 'Lamma Island', 'Tai O']
 }
 
-area_to_district = {area.lower(): district for district, areas in hk_district_areas.items() for area in areas}
-
-def segment_Einput(input_str: str) -> AddressOutput:
-    parts = [part.strip() for part in input_str.split(',')]
-    result = AddressOutput()
-    street_pattern = re.compile(
-        r'\d+.*?(Street|Road|Avenue|Lane|Path|Terrace|Drive|Place|Mansion|Boulevard|Court|Square|Garden|Estate)',
-        re.IGNORECASE)
-    for part in parts:
-        if not result.street and street_pattern.search(part):
-            result.street = part
-        else:
-            lower_part = part.lower()
-            for area, district in area_to_district.items():
-                if area in lower_part:
-                    result.area = part
-                    result.district = district
-                    break
-            if result.area:
-                break
-    if not result.area:
-        for area, district in area_to_district.items():
-            if area in input_str.lower():
-                result.area = area.capitalize()
-                result.district = district
-                break
-    if result.district:
-        if result.district in ['Central and Western', 'Eastern', 'Southern', 'Wan Chai']:
-            result.region = 'Hong Kong Island'
-        elif result.district in ['Kowloon City', 'Kwun Tong', 'Sham Shui Po', 'Wong Tai Sin', 'Yau Tsim Mong']:
-            result.region = 'Kowloon'
-        else:
-            result.region = 'New Territories'
-    if not all([result.street, result.area, result.district, result.region]):
-        result = AddressOutput(street=input_str)
-    return result
-
 @app.get("/area/en/{input_str}")
-def segment_address_en(input_str: str):
-    return segment_Einput(input_str)
+def translate_address(input_str: str):
+    decoded_input = unquote(input_str)
+    address_output = AddressOutput(street=None, area=None, district=None, region=None)
+    results = segment_input(decoded_input)
+    
+    for result in results:
+        area = result.area
+        district = result.district
+        
+        if area and district:
+            for eng_district, sub_districts in hk_district_areas.items():
+                if area in sub_districts:
+                    address_output = AddressOutput(
+                        street=result.street,
+                        area=area,
+                        district=eng_district,
+                        region="Hong Kong"
+                    )
+                    return address_output
+        else:
+            address_output.street = result.street
+            return address_output
 
-def is_chinese(string):
-    return any('\u4e00' <= char <= '\u9fff' for char in string)
-
-@app.get("/area/{input_str}")
-async def segment_address(input_str: str):
-    if is_chinese(input_str):
-        return RedirectResponse(url=f"/area/zh-hk/{input_str}")
-    else:
-        return RedirectResponse(url=f"/area/en/{input_str}")
+    return address_output

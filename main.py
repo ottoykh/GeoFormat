@@ -1,11 +1,12 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from typing import List, Dict, Union, Optional
-from urllib.parse import unquote, quote
+from urllib.parse import unquote
 import re
 from pydantic import BaseModel
 
 app = FastAPI()
+
 @app.get("/")
 def root():
     return {"message": "Hello, World!"}
@@ -37,30 +38,29 @@ areas = {
     }
 }
 
+class AddressOutput(BaseModel):
+    street: Optional[str] = None
+    area: Optional[str] = None
+    district: Optional[str] = None
+    region: Optional[str] = None
+
 def segment_input(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string
     results = []
-    # Assuming areas is a predefined dictionary containing areas, districts, and sub-districts
     for area, districts in areas.items():
         for district, sub_districts in districts.items():
             for sub_district in sub_districts:
                 if sub_district in decoded_input:
-                    # Remove the found sub_district from the input string
                     building_street = decoded_input.replace(sub_district, '').strip()
-
-                    # Remove area, district, and sub_district prefixes if present
                     for prefix in [area, district, sub_district]:
                         if building_street.startswith(prefix):
                             building_street = building_street[len(prefix):].strip()
-                    # Split into street and building details
                     if '號' in building_street:
                         street, building_details = building_street.split('號', 1)
                         street += '號'
                     else:
                         street = building_street.strip() + '號'
                         building_details = ''
-
-                    # Append the parsed address components to results
                     results.append({
                         'area': area,
                         'district': district,
@@ -68,20 +68,15 @@ def segment_input(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
                         'street': [street],
                         'building': building_details.strip()
                     })
-
                     return results
-
-    # If no specific match is found, treat the remaining input as a general address
     if decoded_input.strip():
         building_street = decoded_input.strip()
-
         if '號' in building_street:
             street, building_details = building_street.split('號', 1)
             street += '號'
         else:
             street = building_street.strip() + '號'
             building_details = ''
-
         results.append({
             'area': '',
             'district': '',
@@ -89,8 +84,11 @@ def segment_input(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
             'street': [street],
             'building': building_details.strip()
         })
-
     return results
+
+@app.get("/area/zh-hk/{input_str}")
+def segment_address_zh_hk(input_str: str):
+    return segment_input(input_str)
 
 hk_districts = [
     'Central and Western', 'Eastern', 'Southern', 'Wan Chai',
@@ -98,6 +96,7 @@ hk_districts = [
     'Kwai Tsing', 'North', 'Sai Kung', 'Sha Tin', 'Tai Po', 'Tsuen Wan',
     'Tuen Mun', 'Yuen Long', 'Islands'
 ]
+
 hk_district_areas = {
     'Central and Western': ['Central', 'Sheung Wan', 'Sai Ying Pun', 'Kennedy Town', 'Mid-Levels', 'The Peak', 'Admiralty', 'Lower Peak', 'Upper Central', 'Upper Sheung Wan', 'Western District'],
     'Eastern': ['Quarry Bay', 'Chai Wan', 'Shau Kei Wan', 'Sai Wan Ho', 'North Point', 'Fortress Hill', 'Tai Koo Shing', 'Heng Fa Chuen', 'Braemar Hill', 'Aldrich Bay', 'Heng Fa Villa', 'Mount Parker'],
@@ -119,47 +118,32 @@ hk_district_areas = {
     'Islands': ['Lantau Island', 'Cheung Chau', 'Peng Chau', 'Lamma Island', 'Discovery Bay', 'Tung Chung', 'Mui Wo', 'Tai O', 'Ngong Ping', 'Po Lin Monastery', 'Silvermine Bay', 'Pui O', 'Chek Lap Kok', 'Sok Kwu Wan', 'Yung Shue Wan', 'Hei Ling Chau']
 }
 
-# Create a reverse mapping from area to district
 area_to_district = {area.lower(): district for district, areas in hk_district_areas.items() for area in areas}
-
-class AddressOutput(BaseModel):
-    street: Optional[str] = None
-    area: Optional[str] = None
-    district: Optional[str] = None
-    region: Optional[str] = None
 
 def segment_Einput(input_str: str) -> AddressOutput:
     parts = [part.strip() for part in input_str.split(',')]
     result = AddressOutput()
-
     street_pattern = re.compile(
         r'\d+.*?(Street|Road|Avenue|Lane|Path|Terrace|Drive|Place|Mansion|Boulevard|Court|Square|Garden|Estate)',
         re.IGNORECASE)
-
     for part in parts:
         if not result.street and street_pattern.search(part):
             result.street = part
         else:
-            # Check for area first
             lower_part = part.lower()
             for area, district in area_to_district.items():
                 if area in lower_part:
                     result.area = part
                     result.district = district
                     break
-
             if result.area:
                 break
-
-    # If area is not found in the loop, check the entire input string
     if not result.area:
         for area, district in area_to_district.items():
             if area in input_str.lower():
                 result.area = area.capitalize()
                 result.district = district
                 break
-
-    # Determine region based on district
     if result.district:
         if result.district in ['Central and Western', 'Eastern', 'Southern', 'Wan Chai']:
             result.region = 'Hong Kong Island'
@@ -167,35 +151,20 @@ def segment_Einput(input_str: str) -> AddressOutput:
             result.region = 'Kowloon'
         else:
             result.region = 'New Territories'
-
-    # If we still don't have all the information, set the entire input as the street
     if not all([result.street, result.area, result.district, result.region]):
         result = AddressOutput(street=input_str)
-
     return result
 
-def safe_unquote(input_str: str) -> str:
-    try:
-        return unquote(input_str)
-    except:
-        return input_str
+@app.get("/area/en/{input_str}")
+def segment_address_en(input_str: str):
+    return segment_Einput(input_str)
 
-@app.get("/area/zh-hk")
-def segment_address_zh(input_str: str = Query(..., description="Chinese address to segment")):
-    decoded_input = safe_unquote(input_str)
-    return segment_input(decoded_input)
+def is_chinese(string):
+    return any('\u4e00' <= char <= '\u9fff' for char in string)
 
-@app.get("/area/en")
-def segment_address_en(input_str: str = Query(..., description="English address to segment")):
-    decoded_input = safe_unquote(input_str)
-    return segment_Einput(decoded_input)
-
-@app.get("/area")
-async def segment_address(input_str: str = Query(..., description="Address to segment")):
-    decoded_input = safe_unquote(input_str)
-    if is_chinese(decoded_input):
-        # Redirect to Chinese endpoint
-        return RedirectResponse(url=f"/area/zh-hk?input_str={quote(input_str)}")
+@app.get("/area/{input_str}")
+async def segment_address(input_str: str):
+    if is_chinese(input_str):
+        return RedirectResponse(url=f"/area/zh-hk/{input_str}")
     else:
-        # Assumed to be English endpoint
-        return RedirectResponse(url=f"/area/en?input_str={quote(input_str)}")
+        return RedirectResponse(url=f"/area/en/{input_str}")

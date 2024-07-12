@@ -61,6 +61,7 @@ hk_district_areas = {
     'Islands': ['Cheung Chau', 'Peng Chau', 'Mui Wo', 'Discovery Bay', 'Tung Chung', 'Lantau Island', 'South Lantau', 'Lamma Island', 'Tai O']
 }
 
+# Pydantic model for address output
 class AddressOutput(BaseModel):
     street: Optional[str] = None
     area: Optional[str] = None
@@ -70,15 +71,23 @@ class AddressOutput(BaseModel):
 # Function to segment input and determine address details
 def segment_input(input_str: str) -> AddressOutput:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string
+    address_output = AddressOutput(street=None, area=None, district=None, region=None)
 
     for region, districts in areas.items():
         for district, sub_districts in districts.items():
             for sub_district in sub_districts:
                 if sub_district in decoded_input:
                     street_name = decoded_input.replace(sub_district, '').strip()
-                    return AddressOutput(street=street_name, area=sub_district, district=district, region=region)
+                    address_output = AddressOutput(street=street_name, area=sub_district, district=district, region=region)
+                    return address_output
 
-    return AddressOutput(street=decoded_input.strip(), region="Unknown")
+    # If no match found, return Unknown region with the input as street
+    address_output.street = decoded_input.strip()
+    address_output.region = "Unknown"
+    return address_output
+
+# FastAPI instance
+app = FastAPI()
 
 # FastAPI endpoints
 @app.get("/")
@@ -92,9 +101,9 @@ def segment_address(input_str: str):
 
 @app.get("/area/en/{input_str}")
 def translate_address(input_str: str):
-    result = segment_input(input_str)
+    result = segment_input(input_str.lower())  # Convert input to lowercase for case-insensitive matching
     if result.area and result.district:
         for eng_district, sub_districts in areas[result.region].items():
-            if result.area in sub_districts:
+            if result.area.lower() in [sub_dist.lower() for sub_dist in sub_districts]:  # Check case-insensitive match
                 return AddressOutput(street=result.street, area=result.area, district=eng_district, region=result.region)
     return result

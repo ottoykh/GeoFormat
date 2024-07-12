@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import List, Dict, Union
 from urllib.parse import unquote
+import re
 
-# Data for area and district mappings
+# Define your data for area and district mappings here
 areas = {
     '香港': {
         '中西區': ['堅尼地城', '石塘咀', '西營盤', '上環', '中環', '金鐘', '半山', '山頂'],
@@ -59,58 +60,127 @@ hk_district_areas = {
     'Islands': ['Cheung Chau', 'Peng Chau', 'Mui Wo', 'Discovery Bay', 'Tung Chung', 'Lantau Island', 'South Lantau', 'Lamma Island', 'Tai O']
 }
 
-# Pydantic model for address output
-class AddressOutput(BaseModel):
-    street: Optional[str] = None
-    area: Optional[str] = None
-    district: Optional[str] = None
-    region: Optional[str] = None
+# Reverse mapping from sub-district to district and area for English addresses
+area_to_district = {area.lower(): district for district, areas in areas.items() for area in areas}
 
-# Function to segment input and determine address details
-def segment_input(input_str: str) -> AddressOutput:
-    decoded_input = unquote(input_str)  # Decode URL-encoded input string
-    address_output = AddressOutput(street=None, area=None, district=None, region=None)
-
-    # Splitting based on comma
-    segments = decoded_input.split(',')
-
-    # Extracting region
-    for region, districts in areas.items():
-        for district, sub_districts in districts.items():
-            for sub_district in sub_districts:
-                if sub_district in decoded_input:
-                    for segment in segments:
-                        if sub_district in segment:
-                            street_name = segment.replace(sub_district, '').strip()
-                            address_output = AddressOutput(street=street_name, area=sub_district, district=district, region=region)
-                            return address_output
-
-    # If no match found, return Unknown region with the input as street
-    address_output.street = decoded_input.strip()
-    address_output.region = "Unknown"
-    return address_output
-
-# FastAPI instance
+# Define FastAPI instance
 app = FastAPI()
+
+# Pydantic model for Chinese address output
+class ChineseAddressOutput(BaseModel):
+    area: str
+    district: str
+    sub_district: str
+    street: List[str]
+    building: str
+
+# Pydantic model for English address output
+class EnglishAddressOutput(BaseModel):
+    street: str
+    area: str
+    district: str
+    region: str
+
+# Function to segment Chinese address input
+def segment_chinese_address(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
+    decoded_input = unquote(input_str)  # Decode URL-encoded input string
+    results = []
+
+    # Regular expression to match sub-districts and street names
+    sub_districts = sum([sub_districts for districts in areas.values() for sub_districts in districts.values()], [])
+
+    for area, districts in areas.items():
+        for district, sub_district_list in districts.items():
+            for sub_district in sub_district_list:
+                if sub_district in decoded_input:
+                    # Remove sub-district from input string
+                    building_street = decoded_input.replace(sub_district, '').strip()
+
+                    # Extract street and building details
+                    match = re.search(r'(\d+.*?號)', building_street)
+                    if match:
+                        street = match.group(0)
+                        building = building_street.replace(street, '').strip()
+                    else:
+                        street = building_street
+                        building = ''
+
+                    results.append({
+                        'area': area,
+                        'district': district,
+                        'sub_district': sub_district,
+                        'street': [street],
+                        'building': building
+                    })
+                    return results
+
+    # If no specific match found, treat as a general address
+    if decoded_input.strip():
+        results.append({
+            'area': '',
+            'district': '',
+            'sub_district': '',
+            'street': [decoded_input.strip()],
+            'building': ''
+        })
+
+    return results
+
+# Function to segment English address input
+def segment_english_address(input_str: str) -> EnglishAddressOutput:
+    parts = [part.strip() for part in input_str.split(',')]
+
+    street_pattern = re.compile(
+        r'\d+.*?(Street|Road|Avenue|Lane|Path|Terrace|Drive|Place|Mansion|Boulevard|Court|Square|Garden|Estate)',
+        re.IGNORECASE)
+
+    result = EnglishAddressOutput()
+
+    for part in parts:
+        if not result.street and street_pattern.search(part):
+            result.street = part
+        else:
+            # Check for area first
+            lower_part = part.lower()
+            for area, district in area_to_district.items():
+                if area in lower_part:
+                    result.area = part
+                    result.district = district
+                    break
+
+            if result.area:
+                break
+
+    # If area is not found in the loop, check the entire input string
+    if not result.area:
+        for area, district in area_to_district.items():
+            if area in input_str.lower():
+                result.area = area.capitalize()
+                result.district = district
+                break
+
+    # Determine region based on district
+    if result.district:
+        if result.district in ['中西區', '東區', '南區', '灣仔']:
+            result.region = 'Hong Kong Island'
+        elif result.district in ['九龍城', '油尖旺', '深水埗', '黃大仙', '觀塘']:
+            result.region = 'Kowloon'
+        else:
+            result.region = 'New Territories'
+
+    return result
 
 # FastAPI endpoints
 @app.get("/")
 def root():
     return {"message": "Hello, World!"}
 
-@app.get("/area/zh-hk/{input_str}")
-def segment_address(input_str: str):
-    result = segment_input(input_str)
+@app.get("/area/zh-hk/{input_str}", response_model=List[ChineseAddressOutput])
+def segment_chinese_address_api(input_str: str):
+    result = segment_chinese_address(input_str)
     return result
 
-@app.get("/area/en/{input_str}")
-def translate_address(input_str: str):
-    result = segment_input(input_str)
-
-    if result.area and result.district:
-        for eng_district, sub_districts in hk_district_areas.items():
-            if result.area.lower() in [sub_dist.lower() for sub_dist in sub_districts]:  # Check case-insensitive match
-                street_name = result.street.replace(result.district, '').replace(result.region, '').strip()
-                return AddressOutput(street=street_name, area=result.area, district=eng_district, region=result.region)
-
+@app.get("/area/en/{input_str}", response_model=EnglishAddressOutput)
+def segment_english_address_api(input_str: str):
+    result = segment_english_address(input_str)
     return result

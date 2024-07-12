@@ -1,9 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from urllib.parse import unquote 
-
-app = FastAPI()
+from urllib.parse import unquote
 
 # Data for area and district mappings
 areas = {
@@ -105,5 +103,7 @@ def translate_address(input_str: str):
     if result.area and result.district:
         for eng_district, sub_districts in areas[result.region].items():
             if result.area.lower() in [sub_dist.lower() for sub_dist in sub_districts]:  # Check case-insensitive match
-                return AddressOutput(street=result.street, area=result.area, district=eng_district, region=result.region)
+                # Format street to exclude district and region names
+                street_name = result.street.replace(result.district, '').replace(result.region, '').strip()
+                return AddressOutput(street=street_name, area=result.area, district=eng_district, region=result.region)
     return result

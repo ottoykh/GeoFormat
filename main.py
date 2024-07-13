@@ -1,10 +1,14 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
-from typing import List, Dict, Union, Optional
+from fastapi import FastAPI, HTTPException, Query, Path
+from fastapi.responses import RedirectResponse, JSONResponse
+from typing import List, Dict, Union, Optional, NamedTuple
+import urllib.parse
 from urllib.parse import unquote
+import json
 import re
 from pydantic import BaseModel
-from typing import NamedTuple
+from collections import Counter
+import csv
+import difflib
 
 app = FastAPI()
 @app.get("/")
@@ -129,16 +133,18 @@ hk_district_areas = {
 
 # Create a reverse mapping from area to district
 area_to_district = {area.lower(): district for district, areas in hk_district_areas.items() for area in areas}
-
-# Define Pydantic model for input and output
-class AddressInput(BaseModel):
-    input_str: str
-
 class AddressOutput(BaseModel):
-    street: Optional[str] = None
-    area: Optional[str] = None
-    district: Optional[str] = None
-    region: Optional[str] = None
+    street: str = None
+    area: str = None
+    district: str = None
+    region: str = None
+
+# Define a NamedTuple to store the address output
+class AddressOutput(NamedTuple):
+    area: str = ''
+    district: str = ''
+    region: str = ''
+    street: str = ''
 
 def segment_Einput(input_str: str) -> AddressOutput:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string if necessary
@@ -184,8 +190,8 @@ def segment_Einput(input_str: str) -> AddressOutput:
             result.region = 'New Territories'
 
     # If we still don't have all the information, set the entire input as the street
-    if not any([result.street, result.area, result.district, result.region]):
-        result.street = decoded_input
+    if not all([result.street, result.area, result.district, result.region]):
+        result = AddressOutput(street=decoded_input)
 
     return result
 
@@ -205,3 +211,117 @@ async def segment_address(input_str: str):
     else:
         # Assumed to English endpoint
         return RedirectResponse(url=f"/area/en/{input_str}")
+
+# Load buildings and streets from text files with UTF-8 encoding
+def load_list(file_path: str):
+    with open(file_path, 'r', encoding='utf-8') as f:
+        items = f.read().splitlines()
+    return items
+
+buildings = load_list('Building_merged.txt')
+streets = load_list('Street_CSDI.txt')
+
+def jaccard_similarity(str1: str, str2: str) -> float:
+    set1, set2 = set(str1), set(str2)
+    intersection = set1.intersection(set2)
+    union = set1.union(set2)
+    return len(intersection) / len(union) if len(union) != 0 else 0
+
+def find_similar_items(input_str: str, items: list, limit: int = 20):
+    # Convert input_str to lower case for case-insensitive comparison
+    input_str_lower = input_str.lower()
+    # Compute Jaccard similarity for each item
+    similarities = [(item, jaccard_similarity(input_str_lower, item.lower())) for item in items]
+    # Filter out matches with similarity 0
+    similarities = [match for match in similarities if match[1] > 0]
+    # Sort matches by similarity score (higher scores first)
+    similarities.sort(key=lambda x: x[1], reverse=True)
+    return similarities[:limit]
+
+@app.get("/b/zh-hk/{input_str}")
+async def search_buildings(input_str: str, n: int = Query(None, title="Number of output items", ge=1, le=1000)):
+    # Decode the URL-encoded input string
+    decoded_input_str = urllib.parse.unquote(input_str)
+    # Set default n to 20 if not provided
+    if n is None:
+        n = 20
+    matches = find_similar_items(decoded_input_str, buildings, limit=n)
+    return JSONResponse(content={"input": decoded_input_str, "matches": [{"building": match[0], "similarity": match[1]} for match in matches]})
+
+@app.get("/s/zh-hk/{input_str}")
+async def search_streets(input_str: str, n: int = Query(20, title="Number of output items", ge=1, le=1000)):
+    # Decode the URL-encoded input string
+    decoded_input_str = urllib.parse.unquote(input_str)
+    matches = find_similar_items(decoded_input_str, streets, limit=n)
+    return JSONResponse(content={"input": decoded_input_str, "matches": [{"street": match[0], "similarity": match[1]} for match in matches]})
+
+
+# Load address data from CSV file
+def load_address_data(file_path: str):
+    address_data = []
+    with open(file_path, 'r', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            address_data.append(row)
+    return address_data
+
+address_data = load_address_data('ALS_Trail_index.csv')
+
+def calculate_similarity(input_str: str, target_str: str) -> float:
+    return difflib.SequenceMatcher(None, input_str, target_str).ratio()
+
+def find_similar_addresses(input_str: str, addresses: List[dict], limit: int = 20) -> List[dict]:
+    input_str_lower = input_str.lower()
+    matches = []
+    for address in addresses:
+        building_n = address.get('BuildingN', '').lower()
+        street_n = address.get('StreetN', '').lower()
+        building_similarity = calculate_similarity(input_str_lower, building_n)
+        street_similarity = calculate_similarity(input_str_lower, street_n)
+        if building_similarity > 0.5 or street_similarity > 0.5:
+            matches.append({
+                **address,
+                "BuildingNSimilarity": building_similarity,
+                "StreetNSimilarity": street_similarity
+            })
+        if len(matches) >= limit:
+            break
+    return matches
+
+
+@app.get("/alst/zh-hk/{input_str}")
+async def address_search(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
+    # Decode the URL-encoded input string
+    input_str = unquote(input_str)
+
+    matches = find_similar_addresses(input_str, address_data, limit=n)
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="No matching addresses found.")
+
+    # Sort matches by BuildingNSimilarity descending first, then by StreetNSimilarity descending
+    matches.sort(key=lambda x: (x.get('BuildingNSimilarity', 0.0), x.get('StreetNSimilarity', 0.0)), reverse=True)
+
+    response_data = {
+        "input": input_str,
+        "matches": [
+            {
+                "BuildingN": match.get('BuildingN', ''),
+                "StreetN": match.get('StreetN', ''),
+                "District": match.get('District', ''),
+                "Easting": int(match.get('Easting', 0)),
+                "Northing": int(match.get('Northing', 0)),
+                "Latitude": float(match.get('Latitude', 0.0)),
+                "Longitude": float(match.get('Longitude', 0.0)),
+                "GeoAddress": match.get('GeoAddress', ''),
+                "NUMABOVEGROUNDSTOREYS": int(match.get('NUMABOVEGROUNDSTOREYS', 0)) if isinstance(
+                    match.get('NUMABOVEGROUNDSTOREYS'), (int, float)) else 0,
+                "TOPHEIGHT": float(match.get('TOPHEIGHT', 0.0)) if match.get('TOPHEIGHT', '') != '' else None,
+                "RECORDUPDATEDDATE": match.get('RECORDUPDATEDDATE', ''),
+                "BuildingNSimilarity": match.get('BuildingNSimilarity', 0.0),
+                "StreetNSimilarity": match.get('StreetNSimilarity', 0.0)
+            }
+            for match in matches
+        ]
+    }
+    return JSONResponse(content=response_data)

@@ -278,18 +278,31 @@ def calculate_custom_similarity(input_str: str, target_str: str) -> Tuple[float,
     input_normalized = re.sub(r'\s+', '', input_str.lower())
     target_normalized = re.sub(r'\s+', '', target_str.lower())
 
-    # Detect if target string has a street keyword or numeric ending
-    target_has_street = bool(street_keyword_regex.search(target_normalized)) or bool(numeric_ending_regex.search(target_normalized))
-
     # Calculate similarity using difflib
     similarity_ratio = difflib.SequenceMatcher(None, input_normalized, target_normalized).ratio()
 
-    return similarity_ratio, target_has_street
+    return similarity_ratio, similarity_ratio > 0.45  # Return similarity and a boolean indicating if it passes the threshold
+
+# Function to extract number and street name from input
+def extract_number_and_street(input_str: str) -> Tuple[str, str]:
+    # Regular expression to match numbers at the end of the string
+    match = re.search(r'\d+$', input_str)
+    if match:
+        number = match.group()
+        street = input_str[:match.start()].strip()  # Strip number and any preceding spaces
+    else:
+        number = ''
+        street = input_str.strip()  # If no number found, use entire string as street
+
+    return number, street
 
 # Function to find similar addresses
 def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang: str = 'zh-hk') -> List[Dict[str, str]]:
     input_str_lower = input_str.lower().strip()  # Ensure input is lowercased and stripped of spaces
     matches = []
+
+    # Extract street and number from input
+    input_number, input_street = extract_number_and_street(input_str_lower)
 
     for address in addresses:
         if lang == 'en':
@@ -301,7 +314,7 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
 
         # Calculate similarity for building name and street name
         building_similarity, building_has_street = calculate_custom_similarity(input_str_lower, building)
-        street_similarity, street_has_street = calculate_custom_similarity(input_str_lower, street)
+        street_similarity, street_has_street = calculate_custom_similarity(input_street, street)
 
         # Prioritize matches based on detected component
         if building_similarity > 0.5:
@@ -316,6 +329,15 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
                 "BuildingNSimilarity": 0.0 if not building_has_street else building_similarity,
                 "StreetNSimilarity": street_similarity
             })
+        else:
+            # Fallback to traditional similarity check if no street keywords detected
+            similarity_ratio = difflib.SequenceMatcher(None, input_street, street).ratio()
+            if similarity_ratio > 0.45:  # Adjusted minimum similarity threshold
+                matches.append({
+                    **address,
+                    "BuildingNSimilarity": building_similarity,
+                    "StreetNSimilarity": similarity_ratio
+                })
 
     return matches
 
@@ -348,7 +370,6 @@ def find_similar_addresses_en(input_str: str, addresses: List[Dict[str, str]]) -
 
     return matches
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -403,7 +424,6 @@ async def address_search_en(input_str: str, n: int = Query(50, title="Number of 
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
 
-    # Sort matches by building similarity first, then by street similarity
     matches.sort(key=lambda x: (x.get('BuildingNSimilarity', 0.0), x.get('StreetNSimilarity', 0.0)), reverse=True)
     matches = matches[:n]
 

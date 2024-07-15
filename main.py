@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Path
 from fastapi.responses import RedirectResponse, JSONResponse
-from typing import List, Dict, Union, Optional, NamedTuple
+from typing import List, Dict, Union, Optional, NamedTuple, Tuple
 import urllib.parse
 from urllib.parse import unquote
 import json
@@ -259,23 +259,28 @@ def load_address_data(file_path: str) -> List[Dict[str, str]]:
     with open(file_path, 'r', encoding='utf-8') as csvfile:
         return list(csv.DictReader(csvfile))
 
+# Load address data from CSV file
+def load_address_data(file_path: str) -> List[Dict[str, str]]:
+    with open(file_path, 'r', encoding='utf-8') as csvfile:
+        return list(csv.DictReader(csvfile))
+
 address_data = load_address_data('ALS_DatasetR.csv')
 
 # Define keywords for street suffixes
 street_keywords = ['路', '道', '街', '巷', '橋', '隧道', '大道', '高速公路', '公路', '馬路', '徑']
 
+# Compile regex for street keyword and numeric ending detection
+street_keyword_regex = re.compile('|'.join(street_keywords))
+numeric_ending_regex = re.compile(r'\d+$')
+
 # Custom similarity function with tokenization and keyword extraction
-def calculate_custom_similarity(input_str: str, target_str: str) -> (float, bool):
+def calculate_custom_similarity(input_str: str, target_str: str) -> Tuple[float, bool]:
     # Remove spaces and normalize to lowercase
     input_normalized = re.sub(r'\s+', '', input_str.lower())
     target_normalized = re.sub(r'\s+', '', target_str.lower())
 
-    # Tokenize input and target strings
-    input_tokens = re.split(r'[\s,，]+', input_normalized)
-    target_tokens = re.split(r'[\s,，]+', target_normalized)
-
     # Detect if target string has a street keyword or numeric ending
-    target_has_street = any(token.endswith(tuple(street_keywords)) or re.match(r'\d+$', token) for token in target_tokens)
+    target_has_street = bool(street_keyword_regex.search(target_normalized)) or bool(numeric_ending_regex.search(target_normalized))
 
     # Calculate similarity using difflib
     similarity_ratio = difflib.SequenceMatcher(None, input_normalized, target_normalized).ratio()
@@ -300,7 +305,7 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
             matches.append({
                 **address,
                 "BuildingNSimilarity": building_similarity,
-                "StreetNSimilarity": 0.0 if not building_has_street else street_similarity
+                "StreetNSimilarity": street_similarity if building_has_street else 0.0
             })
         elif street_similarity > 0.5:
             matches.append({
@@ -308,6 +313,9 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
                 "BuildingNSimilarity": 0.0,
                 "StreetNSimilarity": street_similarity
             })
+
+    # Sort matches by combined similarity score
+    matches.sort(key=lambda x: (x['BuildingNSimilarity'], x['StreetNSimilarity']), reverse=True)
 
     return matches
 
@@ -323,7 +331,6 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
 
-    matches.sort(key=lambda x: (x.get('BuildingNSimilarity', 0.0), x.get('StreetNSimilarity', 0.0)), reverse=True)
     matches = matches[:n]
 
     response_data = {
@@ -351,13 +358,9 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
     }
     return JSONResponse(content=response_data)
 
-# Endpoint for segmenting address based on language
-@app.get("/alst/{input_str}")
-async def segment_address(input_str: str):
-    if is_chinese(input_str):
-        return RedirectResponse(url=f"/alst/zh-hk/{input_str}")
-    else:
-        return RedirectResponse(url=f"/alst/en/{input_str}")
+# Helper function to determine if input is Chinese
+def is_chinese(input_str: str) -> bool:
+    return any('\u4e00' <= char <= '\u9fff' for char in input_str)
 
 # Endpoint for segmenting address based on language
 @app.get("/alst/{input_str}")

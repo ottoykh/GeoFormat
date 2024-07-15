@@ -265,7 +265,7 @@ def load_address_data(file_path: str):
             address_data.append(row)
     return address_data
 
-address_data = load_address_data('ALS_Trail_index.csv')
+address_data = load_address_data('ALS_DatasetR.csv')
 
 def calculate_similarity(input_str: str, target_str: str) -> float:
     return difflib.SequenceMatcher(None, input_str, target_str).ratio()
@@ -274,10 +274,10 @@ def find_similar_addresses(input_str: str, addresses: List[dict], limit: int = 2
     input_str_lower = input_str.lower()
     matches = []
     for address in addresses:
-        building_n = address.get('BuildingN', '').lower()
-        street_n = address.get('StreetN', '').lower()
-        building_similarity = calculate_similarity(input_str_lower, building_n)
-        street_similarity = calculate_similarity(input_str_lower, street_n)
+        building = address.get('Building', '').lower()
+        street = address.get('Street', '').lower()
+        building_similarity = calculate_similarity(input_str_lower, building)
+        street_similarity = calculate_similarity(input_str_lower, street)
         if building_similarity > 0.5 or street_similarity > 0.5:
             matches.append({
                 **address,
@@ -287,7 +287,6 @@ def find_similar_addresses(input_str: str, addresses: List[dict], limit: int = 2
         if len(matches) >= limit:
             break
     return matches
-
 
 @app.get("/alst/zh-hk/{input_str}")
 async def address_search(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
@@ -306,18 +305,19 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
         "input": input_str,
         "matches": [
             {
-                "BuildingN": match.get('BuildingN', ''),
-                "StreetN": match.get('StreetN', ''),
+                "Area": match.get('Area', ''),
                 "District": match.get('District', ''),
+                "Street": match.get('Street', ''),
+                "Building": match.get('Building', ''),
+                "BuildingE": match.get('BuildingE', ''),
+                "StreetE": match.get('StreetE', ''),
+                "DistrictE": match.get('DistrictE', ''),
+                "AreaE": match.get('AreaE', ''),
+                "GeoAddress": match.get('GeoAddress', ''),
                 "Easting": int(match.get('Easting', 0)),
                 "Northing": int(match.get('Northing', 0)),
-                "Latitude": float(match.get('Latitude', 0.0)),
-                "Longitude": float(match.get('Longitude', 0.0)),
-                "GeoAddress": match.get('GeoAddress', ''),
-                "NUMABOVEGROUNDSTOREYS": int(match.get('NUMABOVEGROUNDSTOREYS', 0)) if isinstance(
-                    match.get('NUMABOVEGROUNDSTOREYS'), (int, float)) else 0,
-                "TOPHEIGHT": float(match.get('TOPHEIGHT', 0.0)) if match.get('TOPHEIGHT', '') != '' else None,
-                "RECORDUPDATEDDATE": match.get('RECORDUPDATEDDATE', ''),
+                "Lat": float(match.get('Lat', 0.0)),
+                "Lon": float(match.get('Lon', 0.0)),
                 "BuildingNSimilarity": match.get('BuildingNSimilarity', 0.0),
                 "StreetNSimilarity": match.get('StreetNSimilarity', 0.0)
             }
@@ -325,3 +325,70 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
         ]
     }
     return JSONResponse(content=response_data)
+
+@app.get("/alst/en/{input_str}")
+async def address_search_en(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
+    # Decode the URL-encoded input string
+    input_str = unquote(input_str)
+
+    matches = find_similar_addresses(input_str, address_data, limit=n, lang='en')
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="No matching addresses found.")
+
+    # Sort matches by BuildingNSimilarity descending first, then by StreetNSimilarity descending
+    matches.sort(key=lambda x: (x.get('BuildingNSimilarity', 0.0), x.get('StreetNSimilarity', 0.0)), reverse=True)
+
+    response_data = {
+        "input": input_str,
+        "matches": [
+            {
+                "Area": match.get('Area', ''),
+                "District": match.get('District', ''),
+                "Street": match.get('Street', ''),
+                "Building": match.get('Building', ''),
+                "BuildingE": match.get('BuildingE', ''),
+                "StreetE": match.get('StreetE', ''),
+                "DistrictE": match.get('DistrictE', ''),
+                "AreaE": match.get('AreaE', ''),
+                "GeoAddress": match.get('GeoAddress', ''),
+                "Easting": int(match.get('Easting', 0)),
+                "Northing": int(match.get('Northing', 0)),
+                "Lat": float(match.get('Lat', 0.0)),
+                "Lon": float(match.get('Lon', 0.0)),
+                "BuildingNSimilarity": match.get('BuildingNSimilarity', 0.0),
+                "StreetNSimilarity": match.get('StreetNSimilarity', 0.0)
+            }
+            for match in matches
+        ]
+    }
+    return JSONResponse(content=response_data)
+
+def find_similar_addresses(input_str: str, addresses: List[dict], limit: int = 20, lang: str = 'zh-hk') -> List[dict]:
+    input_str_lower = input_str.lower()
+    matches = []
+    for address in addresses:
+        if lang == 'en':
+            building = address.get('BuildingE', '').lower()
+            street = address.get('StreetE', '').lower()
+        else:
+            building = address.get('Building', '').lower()
+            street = address.get('Street', '').lower()
+        building_similarity = calculate_similarity(input_str_lower, building)
+        street_similarity = calculate_similarity(input_str_lower, street)
+        if building_similarity > 0.5 or street_similarity > 0.5:
+            matches.append({
+                **address,
+                "BuildingNSimilarity": building_similarity,
+                "StreetNSimilarity": street_similarity
+            })
+        if len(matches) >= limit:
+            break
+    return matches
+
+@app.get("/alst/{input_str}")
+async def segment_address(input_str: str):
+    if is_chinese(input_str):
+        return RedirectResponse(url=f"/alst/zh-hk/{input_str}")
+    else:
+        return RedirectResponse(url=f"/alst/en/{input_str}")

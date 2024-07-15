@@ -272,14 +272,25 @@ street_keywords = ['road', 'street', 'avenue', 'lane', 'bridge', 'tunnel', 'high
 street_keyword_regex = re.compile('|'.join(street_keywords))
 numeric_ending_regex = re.compile(r'\d+$')
 
-# Custom similarity function with tokenization and keyword extraction
+# Regular expression to detect common street keywords
+street_keyword_regex = re.compile(r'\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd)\b')
+
+# Custom similarity function with enhanced street name matching
+# Custom similarity function with enhanced street name matching
 def calculate_custom_similarity(input_str: str, target_str: str) -> Tuple[float, bool]:
     # Remove spaces and normalize to lowercase
     input_normalized = re.sub(r'\s+', '', input_str.lower())
     target_normalized = re.sub(r'\s+', '', target_str.lower())
 
+    # Check if target string ends with a numeric value
+    target_ends_with_numeric = numeric_ending_regex.search(target_normalized) is not None
+
     # Calculate similarity using difflib
     similarity_ratio = difflib.SequenceMatcher(None, input_normalized, target_normalized).ratio()
+
+    # Adjust similarity based on numeric ending presence
+    if target_ends_with_numeric:
+        similarity_ratio *= 1.2  # Increase similarity score for better matching
 
     return similarity_ratio, similarity_ratio > 0.45  # Return similarity and a boolean indicating if it passes the threshold
 
@@ -313,10 +324,10 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
             street = address.get('Street', '').lower()
 
         # Calculate similarity for building name and street name
-        building_similarity, building_has_street = calculate_custom_similarity(input_str_lower, building)
+        building_similarity, _ = calculate_custom_similarity(input_str_lower, building)
         street_similarity, street_has_street = calculate_custom_similarity(input_street, street)
 
-        # Prioritize matches based on detected component
+        # Determine the priority and structure of matches
         if building_similarity > 0.5:
             matches.append({
                 **address,
@@ -326,7 +337,7 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
         elif street_has_street:
             matches.append({
                 **address,
-                "BuildingNSimilarity": 0.0 if not building_has_street else building_similarity,
+                "BuildingNSimilarity": 0.0 if not building_similarity else building_similarity,
                 "StreetNSimilarity": street_similarity
             })
         else:
@@ -370,14 +381,6 @@ def find_similar_addresses_en(input_str: str, addresses: List[Dict[str, str]]) -
 
     return matches
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Endpoint for address search (Chinese)
 @app.get("/alst/zh-hk/{input_str}")
 async def address_search(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
@@ -419,7 +422,7 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
 @app.get("/alst/en/{input_str}")
 async def address_search_en(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
     input_str = unquote(input_str)
-    matches = find_similar_addresses_en(input_str, address_data)
+    matches = find_similar_addresses(input_str, address_data, lang='en')
 
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
@@ -454,7 +457,7 @@ async def address_search_en(input_str: str, n: int = Query(50, title="Number of 
 
 @app.get("/alst/{input_str}")
 async def segment_address(input_str: str):
-    if is_chinese(input_str):
+    if input_str.lower().strip().startswith('zh'):
         return RedirectResponse(url=f"/alst/zh-hk/{input_str}")
     else:
         return RedirectResponse(url=f"/alst/en/{input_str}")

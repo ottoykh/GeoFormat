@@ -8,6 +8,7 @@ import re
 from pydantic import BaseModel
 import csv
 import difflib
+import unicodedata
 
 app = FastAPI()
 @app.get("/")
@@ -40,7 +41,6 @@ areas = {
         '離島': ['長洲', '坪洲', '大嶼山', '東涌', '南丫島']
     }
 }
-
 
 def segment_input(input_str: str) -> List[Dict[str, Union[str, List[str]]]]:
     decoded_input = unquote(input_str)  # Decode URL-encoded input string
@@ -198,9 +198,11 @@ def segment_Einput(input_str: str) -> AddressOutput:
 def segment_address(input_str: str):
     return segment_Einput(input_str)
 
-def is_chinese(string):
-    # This function checks if the string contains Chinese characters
-    return any('\u4e00' <= char <= '\u9fff' for char in string)
+def is_chinese(input_str: str) -> bool:
+    for char in input_str:
+        if 'CJK' in unicodedata.name(char, ''):
+            return True
+    return False
 
 @app.get("/area/{input_str}")
 async def segment_address(input_str: str):
@@ -259,11 +261,6 @@ def load_address_data(file_path: str) -> List[Dict[str, str]]:
     with open(file_path, 'r', encoding='utf-8') as csvfile:
         return list(csv.DictReader(csvfile))
 
-# Load address data from CSV file
-def load_address_data(file_path: str) -> List[Dict[str, str]]:
-    with open(file_path, 'r', encoding='utf-8') as csvfile:
-        return list(csv.DictReader(csvfile))
-
 address_data = load_address_data('ALS_DatasetR.csv')
 
 # Define keywords for street suffixes
@@ -296,33 +293,28 @@ def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang
         building = address.get('BuildingE' if lang == 'en' else 'Building', '').lower()
         street = address.get('StreetE' if lang == 'en' else 'Street', '').lower()
 
-        # Calculate similarity and check for street keywords or numeric ending in building or street
-        building_similarity, building_has_street = calculate_custom_similarity(input_str_lower, building)
-        street_similarity, street_has_street = calculate_custom_similarity(input_str_lower, street)
+        # Calculate similarity for building and street
+        building_similarity, _ = calculate_custom_similarity(input_str_lower, building)
+        street_similarity, _ = calculate_custom_similarity(input_str_lower, street)
 
-        # Prioritize matches based on detected component
-        if building_similarity > 0.5:
+        # Calculate combined similarity score
+        combined_similarity = building_similarity + street_similarity
+
+        # Assign similarity scores
+        if building_similarity > 0.45 or street_similarity > 0.45:
             matches.append({
                 **address,
                 "BuildingNSimilarity": building_similarity,
-                "StreetNSimilarity": street_similarity if building_has_street else 0.0
-            })
-        elif street_similarity > 0.5:
-            matches.append({
-                **address,
-                "BuildingNSimilarity": 0.0,
-                "StreetNSimilarity": street_similarity
+                "StreetNSimilarity": street_similarity,
+                "CombinedSimilarity": combined_similarity
             })
 
-    # Sort matches by combined similarity score
+    # Sort matches by BuildingNSimilarity descending first, then by StreetNSimilarity descending
     matches.sort(key=lambda x: (x['BuildingNSimilarity'], x['StreetNSimilarity']), reverse=True)
 
     return matches
 
-# Initialize FastAPI
-app = FastAPI()
-
-# Endpoint for address search
+# FastAPI endpoints
 @app.get("/alst/zh-hk/{input_str}")
 async def address_search(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
     input_str = unquote(input_str)
@@ -331,7 +323,43 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
 
-    matches = matches[:n]
+    matches = matches[:n]  # Limit the number of matches returned
+
+    response_data = {
+        "input": input_str,
+        "matches": [
+            {
+                "Area": match.get('Area', ''),
+                "District": match.get('District', ''),
+                "Street": match.get('Street', ''),
+                "Building": match.get('Building', ''),
+                "BuildingE": match.get('BuildingE', ''),
+                "StreetE": match.get('StreetE', ''),
+                "DistrictE": match.get('DistrictE', ''),
+                "AreaE": match.get('AreaE', ''),
+                "GeoAddress": match.get('GeoAddress', ''),
+                "Easting": int(match.get('Easting', 0)),
+                "Northing": int(match.get('Northing', 0)),
+                "Lat": float(match.get('Lat', 0.0)),
+                "Lon": float(match.get('Lon', 0.0)),
+                "BSimilarity": match.get('BuildingNSimilarity', 0.0),
+                "SSimilarity": match.get('StreetNSimilarity', 0.0),
+                "CSimilarity": match.get('CombinedSimilarity', 0.0)
+            }
+            for match in matches
+        ]
+    }
+    return JSONResponse(content=response_data)
+
+@app.get("/alst/en/{input_str}")
+async def address_search_en(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
+    input_str = unquote(input_str)
+    matches = find_similar_addresses(input_str, address_data, lang='en')
+
+    if not matches:
+        raise HTTPException(status_code=404, detail="No matching addresses found.")
+
+    matches = matches[:n]  # Limit the number of matches returned
 
     response_data = {
         "input": input_str,
@@ -351,16 +379,13 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
                 "Lat": float(match.get('Lat', 0.0)),
                 "Lon": float(match.get('Lon', 0.0)),
                 "BuildingNSimilarity": match.get('BuildingNSimilarity', 0.0),
-                "StreetNSimilarity": match.get('StreetNSimilarity', 0.0)
+                "StreetNSimilarity": match.get('StreetNSimilarity', 0.0),
+                "CombinedSimilarity": match.get('CombinedSimilarity', 0.0)
             }
             for match in matches
         ]
     }
     return JSONResponse(content=response_data)
-
-# Helper function to determine if input is Chinese
-def is_chinese(input_str: str) -> bool:
-    return any('\u4e00' <= char <= '\u9fff' for char in input_str)
 
 # Endpoint for segmenting address based on language
 @app.get("/alst/{input_str}")

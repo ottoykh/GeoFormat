@@ -11,6 +11,7 @@ import csv
 import difflib
 from difflib import SequenceMatcher
 import unicodedata
+import asyncio
 
 app = FastAPI()
 @app.get("/")
@@ -263,121 +264,87 @@ def load_address_data(file_path: str) -> List[Dict[str, str]]:
     with open(file_path, 'r', encoding='utf-8') as csvfile:
         return list(csv.DictReader(csvfile))
 
-address_data = load_address_data('ALS_DatasetR.csv')
+address_data = load_address_data('ALS_Dataset2.csv')
 
-# Define keywords for street suffixes
+# Precompile regex patterns
 street_keywords = ['road', 'street', 'avenue', 'lane', 'bridge', 'tunnel', 'highway', 'route', 'way']
-
-# Compile regex for street keyword and numeric ending detection
-street_keyword_regex = re.compile('|'.join(street_keywords))
+street_keyword_regex = re.compile(r'\b(?:' + '|'.join(street_keywords) + r')\b', re.IGNORECASE)
 numeric_ending_regex = re.compile(r'\d+$')
 
-# Regular expression to detect common street keywords
-street_keyword_regex = re.compile(r'\b(?:street|st|road|rd|avenue|ave|lane|ln|drive|dr|boulevard|blvd)\b')
+# Load address data from CSV file
+def load_address_data(file_path: str) -> List[Tuple[str, str, str, str, str, str, str, str, str, int, int, float, float]]:
+    data = []
+    with open(file_path, 'r', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            data.append((
+                row['Area'], row['District'], row['Street'], row['Building'],
+                row['BuildingE'], row['StreetE'], row['DistrictE'], row['AreaE'],
+                row['GeoAddress'], int(row['Easting']), int(row['Northing']),
+                float(row['Lat']), float(row['Lon'])
+            ))
+    return data
 
-# Custom similarity function with enhanced street name matching
+address_data = load_address_data('ALS_DatasetR.csv')
+
 # Custom similarity function with enhanced street name matching
 def calculate_custom_similarity(input_str: str, target_str: str) -> Tuple[float, bool]:
-    # Remove spaces and normalize to lowercase
     input_normalized = re.sub(r'\s+', '', input_str.lower())
     target_normalized = re.sub(r'\s+', '', target_str.lower())
-
-    # Check if target string ends with a numeric value
     target_ends_with_numeric = numeric_ending_regex.search(target_normalized) is not None
-
-    # Calculate similarity using difflib
     similarity_ratio = difflib.SequenceMatcher(None, input_normalized, target_normalized).ratio()
-
-    # Adjust similarity based on numeric ending presence
     if target_ends_with_numeric:
-        similarity_ratio *= 1.2  # Increase similarity score for better matching
-
-    return similarity_ratio, similarity_ratio > 0.45  # Return similarity and a boolean indicating if it passes the threshold
+        similarity_ratio *= 1.2
+    return similarity_ratio, similarity_ratio > 0.45
 
 # Function to extract number and street name from input
 def extract_number_and_street(input_str: str) -> Tuple[str, str]:
-    # Regular expression to match numbers at the end of the string
     match = re.search(r'\d+$', input_str)
     if match:
         number = match.group()
-        street = input_str[:match.start()].strip()  # Strip number and any preceding spaces
+        street = input_str[:match.start()].strip()
     else:
         number = ''
-        street = input_str.strip()  # If no number found, use entire string as street
-
+        street = input_str.strip()
     return number, street
 
-# Function to find similar addresses
-def find_similar_addresses(input_str: str, addresses: List[Dict[str, str]], lang: str = 'zh-hk') -> List[Dict[str, str]]:
-    input_str_lower = input_str.lower().strip()  # Ensure input is lowercased and stripped of spaces
+# Optimized function to find similar addresses
+def find_similar_addresses(input_str: str, addresses: List[Tuple[str, str, str, str, str, str, str, str, str, int, int, float, float]], lang: str = 'zh-hk') -> List[Dict[str, any]]:
+    input_str_lower = input_str.lower().strip()
     matches = []
-
-    # Extract street and number from input
     input_number, input_street = extract_number_and_street(input_str_lower)
 
     for address in addresses:
         if lang == 'en':
-            building = address.get('BuildingE', '').lower()
-            street = address.get('StreetE', '').lower()
+            building = address[4].lower()
+            street = address[5].lower()
         else:
-            building = address.get('Building', '').lower()
-            street = address.get('Street', '').lower()
+            building = address[3].lower()
+            street = address[2].lower()
 
-        # Calculate similarity for building name and street name
         building_similarity, _ = calculate_custom_similarity(input_str_lower, building)
         street_similarity, street_has_street = calculate_custom_similarity(input_street, street)
 
-        # Determine the priority and structure of matches
         if building_similarity > 0.5:
             matches.append({
-                **address,
+                "data": address,
                 "BuildingNSimilarity": building_similarity,
                 "StreetNSimilarity": 0.0
             })
         elif street_has_street:
             matches.append({
-                **address,
+                "data": address,
                 "BuildingNSimilarity": 0.0 if not building_similarity else building_similarity,
                 "StreetNSimilarity": street_similarity
             })
         else:
-            # Fallback to traditional similarity check if no street keywords detected
             similarity_ratio = difflib.SequenceMatcher(None, input_street, street).ratio()
-            if similarity_ratio > 0.45:  # Adjusted minimum similarity threshold
+            if similarity_ratio > 0.45:
                 matches.append({
-                    **address,
+                    "data": address,
                     "BuildingNSimilarity": building_similarity,
                     "StreetNSimilarity": similarity_ratio
                 })
-
-    return matches
-
-# Function to find similar addresses for English input
-def find_similar_addresses_en(input_str: str, addresses: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    input_str_lower = input_str.lower().strip()  # Ensure input is lowercased and stripped of spaces
-    matches = []
-
-    for address in addresses:
-        building = address.get('BuildingE', '').lower()
-        street = address.get('StreetE', '').lower()
-
-        # Calculate similarity for building name and street name
-        building_similarity, building_has_street = calculate_custom_similarity(input_str_lower, building)
-        street_similarity, street_has_street = calculate_custom_similarity(input_str_lower, street)
-
-        # Prioritize matches based on detected component
-        if building_similarity > 0.5:
-            matches.append({
-                **address,
-                "BuildingNSimilarity": building_similarity,
-                "StreetNSimilarity": 0.0
-            })
-        elif street_has_street:
-            matches.append({
-                **address,
-                "BuildingNSimilarity": 0.0 if not building_has_street else building_similarity,
-                "StreetNSimilarity": street_similarity
-            })
 
     return matches
 
@@ -385,33 +352,34 @@ def find_similar_addresses_en(input_str: str, addresses: List[Dict[str, str]]) -
 @app.get("/alst/zh-hk/{input_str}")
 async def address_search(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
     input_str = unquote(input_str)
-    matches = find_similar_addresses(input_str, address_data)
+    loop = asyncio.get_event_loop()
+    matches = await loop.run_in_executor(None, find_similar_addresses, input_str, address_data)
 
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
 
-    matches.sort(key=lambda x: (x.get('StreetNSimilarity', 0.0), x.get('BuildingNSimilarity', 0.0)), reverse=True)
+    matches.sort(key=lambda x: (x['StreetNSimilarity'], x['BuildingNSimilarity']), reverse=True)
     matches = matches[:n]
 
     response_data = {
         "input": input_str,
         "matches": [
             {
-                "Area": match.get('Area', ''),
-                "District": match.get('District', ''),
-                "Street": match.get('Street', ''),
-                "Building": match.get('Building', ''),
-                "BuildingE": match.get('BuildingE', ''),
-                "StreetE": match.get('StreetE', ''),
-                "DistrictE": match.get('DistrictE', ''),
-                "AreaE": match.get('AreaE', ''),
-                "GeoAddress": match.get('GeoAddress', ''),
-                "Easting": int(match.get('Easting', 0)),
-                "Northing": int(match.get('Northing', 0)),
-                "Lat": float(match.get('Lat', 0.0)),
-                "Lon": float(match.get('Lon', 0.0)),
-                "BuildingNSimilarity": match.get('BuildingNSimilarity', 0.0),
-                "StreetNSimilarity": match.get('StreetNSimilarity', 0.0)
+                "Area": match['data'][0],
+                "District": match['data'][1],
+                "Street": match['data'][2],
+                "Building": match['data'][3],
+                "BuildingE": match['data'][4],
+                "StreetE": match['data'][5],
+                "DistrictE": match['data'][6],
+                "AreaE": match['data'][7],
+                "GeoAddress": match['data'][8],
+                "Easting": match['data'][9],
+                "Northing": match['data'][10],
+                "Lat": match['data'][11],
+                "Lon": match['data'][12],
+                "BuildingNSimilarity": match['BuildingNSimilarity'],
+                "StreetNSimilarity": match['StreetNSimilarity']
             }
             for match in matches
         ]
@@ -422,33 +390,34 @@ async def address_search(input_str: str, n: int = Query(50, title="Number of out
 @app.get("/alst/en/{input_str}")
 async def address_search_en(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
     input_str = unquote(input_str)
-    matches = find_similar_addresses(input_str, address_data, lang='en')
+    loop = asyncio.get_event_loop()
+    matches = await loop.run_in_executor(None, find_similar_addresses, input_str, address_data, 'en')
 
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
 
-    matches.sort(key=lambda x: (x.get('BuildingNSimilarity', 0.0), x.get('StreetNSimilarity', 0.0)), reverse=True)
+    matches.sort(key=lambda x: (x['BuildingNSimilarity'], x['StreetNSimilarity']), reverse=True)
     matches = matches[:n]
 
     response_data = {
         "input": input_str,
         "matches": [
             {
-                "Area": match.get('Area', ''),
-                "District": match.get('District', ''),
-                "Street": match.get('Street', ''),
-                "Building": match.get('Building', ''),
-                "BuildingE": match.get('BuildingE', ''),
-                "StreetE": match.get('StreetE', ''),
-                "DistrictE": match.get('DistrictE', ''),
-                "AreaE": match.get('AreaE', ''),
-                "GeoAddress": match.get('GeoAddress', ''),
-                "Easting": int(match.get('Easting', 0)),
-                "Northing": int(match.get('Northing', 0)),
-                "Lat": float(match.get('Lat', 0.0)),
-                "Lon": float(match.get('Lon', 0.0)),
-                "BuildingNSimilarity": match.get('BuildingNSimilarity', 0.0),
-                "StreetNSimilarity": match.get('StreetNSimilarity', 0.0)
+                "Area": match['data'][0],
+                "District": match['data'][1],
+                "Street": match['data'][2],
+                "Building": match['data'][3],
+                "BuildingE": match['data'][4],
+                "StreetE": match['data'][5],
+                "DistrictE": match['data'][6],
+                "AreaE": match['data'][7],
+                "GeoAddress": match['data'][8],
+                "Easting": match['data'][9],
+                "Northing": match['data'][10],
+                "Lat": match['data'][11],
+                "Lon": match['data'][12],
+                "BuildingNSimilarity": match['BuildingNSimilarity'],
+                "StreetNSimilarity": match['StreetNSimilarity']
             }
             for match in matches
         ]

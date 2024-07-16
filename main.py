@@ -15,8 +15,9 @@ import unicodedata
 import asyncio
 from functools import partial, lru_cache
 import bisect
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import heapq
+import time
 
 app = FastAPI()
 @app.get("/")
@@ -268,7 +269,6 @@ def load_address_data(file_path: str) -> Dict[str, List[AddressData]]:
             address_dict[address.StreetE.lower()].append(address)
     return address_dict
 
-
 buildings = load_list('Building_merged.txt')
 streets = load_list('Street_CSDI.txt')
 address_data = load_address_data('ALS_DatasetR.csv')
@@ -280,7 +280,6 @@ def calculate_custom_similarity(input_str: str, target_str: str, is_street: bool
     if is_street:
         similarity_ratio *= 1.5
     return similarity_ratio, similarity_ratio > (0.4 if is_street else 0.45)
-
 
 def extract_number_and_street(input_str: str) -> Tuple[str, str]:
     for region, districts in areas.items():
@@ -298,7 +297,6 @@ def extract_number_and_street(input_str: str) -> Tuple[str, str]:
         street = input_str.strip()
     return number, street
 
-
 def find_closest_items(input_str: str, items: List[str], n: int = 10) -> List[str]:
     input_lower = input_str.lower()
     index = bisect.bisect_left(items, input_lower)
@@ -306,16 +304,15 @@ def find_closest_items(input_str: str, items: List[str], n: int = 10) -> List[st
                      key=lambda x: difflib.SequenceMatcher(None, input_lower, x).ratio(), reverse=True)[:n]
     return closest
 
-
-async def find_similar_addresses(input_str: str, address_data: Dict[str, List[AddressData]], lang: str = 'zh-hk',
-                                 max_results: int = 50) -> List[Dict[str, Any]]:
+async def find_similar_addresses(input_str: str, address_data: Dict[str, List[AddressData]], lang: str = 'zh-hk', max_results: int = 50) -> List[Dict[str, Any]]:
     input_str_lower = input_str.lower().strip()
     input_number, input_street = extract_number_and_street(input_str_lower)
-    closest_buildings = find_closest_items(input_str_lower, buildings, n=20)
-    closest_streets = find_closest_items(input_street, streets, n=20)
+    closest_buildings = find_closest_items(input_str_lower, buildings, n=10)
+    closest_streets = find_closest_items(input_street, streets, n=10)
 
     results = []
     seen_addresses = set()
+    start_time = time.time()
 
     def process_address(address, similarity):
         if address.GeoAddress not in seen_addresses:
@@ -325,6 +322,8 @@ async def find_similar_addresses(input_str: str, address_data: Dict[str, List[Ad
 
     def search_buildings():
         for building in closest_buildings:
+            if time.time() - start_time > 4.5:  # Stop if nearing time limit
+                return
             building_similarity, _ = calculate_custom_similarity(input_str_lower, building)
             if building_similarity > 0.5:
                 for address in address_data.get(building.lower(), []):
@@ -336,6 +335,8 @@ async def find_similar_addresses(input_str: str, address_data: Dict[str, List[Ad
 
     def search_streets():
         for street in closest_streets:
+            if time.time() - start_time > 4.5:  # Stop if nearing time limit
+                return
             street_similarity, _ = calculate_custom_similarity(input_street, street, is_street=True)
             if street_similarity > 0.6:
                 for address in address_data.get(street.lower(), []):
@@ -346,13 +347,12 @@ async def find_similar_addresses(input_str: str, address_data: Dict[str, List[Ad
                             return
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        building_future = executor.submit(search_buildings)
-        street_future = executor.submit(search_streets)
-        building_future.result()
-        street_future.result()
+        futures = [executor.submit(search_buildings), executor.submit(search_streets)]
+        done, _ = wait(futures, timeout=4.5, return_when=FIRST_COMPLETED)
+        for future in done:
+            future.result()
 
     return [heapq.heappop(results)[2] for _ in range(min(len(results), max_results))]
-
 
 @app.get("/alst/zh-hk/{input_str}")
 async def address_search_zh(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
@@ -370,7 +370,6 @@ async def address_search_zh(input_str: str, n: int = Query(50, title="Number of 
     }
     return JSONResponse(content=response_data)
 
-
 @app.get("/alst/en/{input_str}")
 async def address_search_en(input_str: str, n: int = Query(50, title="Number of output items", ge=1, le=1000)):
     input_str = unquote(input_str)
@@ -386,7 +385,6 @@ async def address_search_en(input_str: str, n: int = Query(50, title="Number of 
         ]
     }
     return JSONResponse(content=response_data)
-
 
 @app.get("/alst/{input_str}")
 async def segment_address(input_str: str):

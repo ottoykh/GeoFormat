@@ -236,8 +236,6 @@ class AddressData:
         self.Lat = float(row[12])
         self.Lon = float(row[13])
 
-app = FastAPI()
-
 def load_list(file_path: str) -> List[str]:
     with open(file_path, 'r', encoding='utf-8') as file:
         return sorted([line.strip().lower() for line in file])

@@ -216,12 +216,10 @@ async def search_streets(input_str: str, n: int = Query(20, title="Number of out
     matches = find_similar_items(decoded_input_str, streets, limit=n)
     return JSONResponse(content={"input": decoded_input_str, "matches": [{"street": match[0], "similarity": match[1]} for match in matches]})
 
-
 # Precompile regex patterns
 street_keywords = ['road', 'street', 'avenue', 'lane', 'bridge', 'tunnel', 'highway', 'route', 'way']
 street_keyword_regex = re.compile(r'\b(?:' + '|'.join(street_keywords) + r')\b', re.IGNORECASE)
 numeric_ending_regex = re.compile(r'\d+\s*[a-zA-Z]?$')
-
 
 class AddressData(BaseModel):
     Area: str
@@ -238,12 +236,10 @@ class AddressData(BaseModel):
     Lat: float
     Lon: float
 
-
 @lru_cache(maxsize=1)
 def load_list(file_path: str) -> List[str]:
     with open(file_path, 'r', encoding='utf-8') as file:
         return sorted([line.strip().lower() for line in file])
-
 
 @lru_cache(maxsize=1)
 def load_address_data(file_path: str) -> Dict[str, List[AddressData]]:
@@ -272,6 +268,9 @@ def load_address_data(file_path: str) -> Dict[str, List[AddressData]]:
             address_dict[address.StreetE.lower()].append(address)
     return address_dict
 
+
+buildings = load_list('Building_merged.txt')
+streets = load_list('Street_CSDI.txt')
 address_data = load_address_data('ALS_DatasetR.csv')
 
 def calculate_custom_similarity(input_str: str, target_str: str, is_street: bool = False) -> Tuple[float, bool]:
@@ -280,7 +279,7 @@ def calculate_custom_similarity(input_str: str, target_str: str, is_street: bool
         similarity_ratio *= 1.2
     if is_street:
         similarity_ratio *= 1.5
-    return similarity_ratio/1.7, similarity_ratio > (0.4/1.7 if is_street else 0.45/1.7)
+    return similarity_ratio, similarity_ratio > (0.4 if is_street else 0.45)
 
 
 def extract_number_and_street(input_str: str) -> Tuple[str, str]:
@@ -299,12 +298,14 @@ def extract_number_and_street(input_str: str) -> Tuple[str, str]:
         street = input_str.strip()
     return number, street
 
+
 def find_closest_items(input_str: str, items: List[str], n: int = 10) -> List[str]:
     input_lower = input_str.lower()
     index = bisect.bisect_left(items, input_lower)
     closest = sorted(items[max(0, index - n):min(len(items), index + n)],
                      key=lambda x: difflib.SequenceMatcher(None, input_lower, x).ratio(), reverse=True)[:n]
     return closest
+
 
 async def find_similar_addresses(input_str: str, address_data: Dict[str, List[AddressData]], lang: str = 'zh-hk',
                                  max_results: int = 50) -> List[Dict[str, Any]]:

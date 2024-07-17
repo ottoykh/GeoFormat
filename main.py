@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query, Path
 from fastapi.responses import RedirectResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Union, Optional, NamedTuple, Tuple, Any
 import urllib.parse
 from urllib.parse import unquote
@@ -8,7 +7,6 @@ import re
 from pydantic import BaseModel
 import csv
 import difflib
-from difflib import SequenceMatcher
 import unicodedata
 from functools import partial, lru_cache
 import bisect
@@ -179,18 +177,15 @@ def load_list(file_path: str) -> List[str]:
 buildings = load_list('Building_merged.txt')
 streets = load_list('Street_CSDI.txt')
 
-# Preprocess items and calculate Jaccard similarity
 def preprocess_items(items: List[str]) -> List[Tuple[str, set]]:
     processed_items = [(item, set(item.lower())) for item in items]
     return processed_items
 
-# Calculate Jaccard similarity
 def jaccard_similarity(set1: set, set2: set) -> float:
     intersection = set1.intersection(set2)
     union = set1.union(set2)
     return len(intersection) / len(union) if len(union) != 0 else 0
 
-# Find similar items using Jaccard similarity
 def find_similar_items(input_str: str, processed_items: List[Tuple[str, set]], limit: int = 20) -> List[Tuple[str, float]]:
     input_set = set(input_str.lower())
     similarities = [(item[0], jaccard_similarity(input_set, item[1])) for item in processed_items]
@@ -214,7 +209,6 @@ async def search_streets(input_str: str, n: int = Query(20, title="Number of out
     decoded_input_str = urllib.parse.unquote(input_str)
     matches = find_similar_items(decoded_input_str, processed_streets, limit=n)
     return JSONResponse(content={"input": decoded_input_str, "matches": [{"street": match[0], "similarity": match[1]} for match in matches]})
-
 
 street_keywords = ['road', 'street', 'avenue', 'lane', 'bridge', 'tunnel', 'highway', 'route', 'way']
 street_keyword_regex = re.compile(r'\b(?:' + '|'.join(street_keywords) + r')\b', re.IGNORECASE)
@@ -289,7 +283,7 @@ def find_closest_items(input_str: str, items: List[str], n: int = 5) -> List[str
                      ), reverse=True)[:n]
     return closest
 
-async def find_similar_addresses(input_str: str, lang: str = 'zh-hk', max_results: int = 10) -> List[Dict[str, Any]]:
+async def find_similar_addresses(input_str: str, lang: str = 'zh-hk', district: str = None, max_results: int = 10) -> List[Dict[str, Any]]:
     input_str_lower = input_str.lower().strip()
     input_number, input_street = extract_number_and_street(input_str_lower)
 
@@ -312,12 +306,12 @@ async def find_similar_addresses(input_str: str, lang: str = 'zh-hk', max_result
 
     def search_buildings():
         for building in closest_buildings:
-            if time.time() - start_time > 2.5:
+            if time.time() - start_time > 2:
                 return
             building_similarity = calculate_custom_similarity(input_str_lower, building)
-            if building_similarity > 0.6:
+            if building_similarity > 0.5:
                 for address in address_data:
-                    if building.lower() in address.BuildingE.lower() or building.lower() in address.Building.lower():
+                    if (building.lower() in address.BuildingE.lower() or building.lower() in address.Building.lower()) and (district is None or district in address.District):
                         result = process_address(address, building_similarity)
                         if result:
                             heapq.heappush(results, result)
@@ -326,12 +320,12 @@ async def find_similar_addresses(input_str: str, lang: str = 'zh-hk', max_result
 
     def search_streets():
         for street in closest_streets:
-            if time.time() - start_time > 2.5:
+            if time.time() - start_time > 2:
                 return
             street_similarity = calculate_custom_similarity(input_street, street, is_street=True)
-            if street_similarity > 0.7:
+            if street_similarity > 0.5:
                 for address in address_data:
-                    if street.lower() in address.StreetE.lower() or street.lower() in address.Street.lower():
+                    if (street.lower() in address.StreetE.lower() or street.lower() in address.Street.lower()) and (district is None or district in address.District):
                         result = process_address(address, street_similarity)
                         if result:
                             heapq.heappush(results, result)
@@ -340,16 +334,16 @@ async def find_similar_addresses(input_str: str, lang: str = 'zh-hk', max_result
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(search_buildings), executor.submit(search_streets)]
-        done, _ = wait(futures, timeout=2.8, return_when=FIRST_COMPLETED)
+        done, _ = wait(futures, timeout=2, return_when=FIRST_COMPLETED)
         for future in done:
             future.result()
 
     return [heapq.heappop(results)[2] for _ in range(min(len(results), max_results))]
 
 @app.get("/alst/zh-hk/{input_str}")
-async def address_search_zh(input_str: str, n: int = Query(10, title="Number of output items", ge=1, le=100)):
-    input_str = unquote(input_str)
-    matches = await find_similar_addresses(input_str)
+async def address_search_zh(input_str: str, district: str = Query(None), n: int = Query(10, title="Number of output items", ge=1, le=100)):
+    input_str = urllib.parse.unquote(input_str)
+    matches = await find_similar_addresses(input_str, district=district)
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
     matches = matches[:n]
@@ -363,9 +357,9 @@ async def address_search_zh(input_str: str, n: int = Query(10, title="Number of 
     return JSONResponse(content=response_data)
 
 @app.get("/alst/en/{input_str}")
-async def address_search_en(input_str: str, n: int = Query(10, title="Number of output items", ge=1, le=100)):
-    input_str = unquote(input_str)
-    matches = await find_similar_addresses(input_str, lang='en')
+async def address_search_en(input_str: str, district: str = Query(None), n: int = Query(10, title="Number of output items", ge=1, le=100)):
+    input_str = urllib.parse.unquote(input_str)
+    matches = await find_similar_addresses(input_str, lang='en', district=district)
     if not matches:
         raise HTTPException(status_code=404, detail="No matching addresses found.")
     matches = matches[:n]
